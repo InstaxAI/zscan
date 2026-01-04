@@ -1,0 +1,90 @@
+name: build
+
+on:
+  push:
+    branches: ["master", "main"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}-${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          BIN="zscan"
+          EXT=""
+          if [ "${GOOS}" = "windows" ]; then EXT=".exe"; fi
+
+          OUT="dist/${BIN}_${GOOS}_${GOARCH}${EXT}"
+
+          # 需要的话可以加版本信息（可选）
+          # VERSION="${GITHUB_REF_NAME:-dev}"
+          # go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${OUT}" .
+
+          go build -trimpath -ldflags "-s -w" -o "${OUT}" .
+          ls -lh "${OUT}"
+
+      - name: Install UPX
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl file
+
+      - name: UPX compress (max level)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in dist/*; do
+            echo "==> $f"
+            file "$f" || true
+
+            # UPX 对某些平台/格式可能不支持（尤其是部分 macOS/arm64 Mach-O）
+            # 这里做“尽力压缩”：失败则保留未压缩原文件，不让 CI 整体失败
+            set +e
+            upx --best --lzma "$f"
+            rc=$?
+            set -e
+            if [ $rc -ne 0 ]; then
+              echo "UPX skipped/failed for $f (rc=$rc). Keep
